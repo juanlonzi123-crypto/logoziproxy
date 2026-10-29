@@ -59,6 +59,20 @@ const BASE_CSS = `
 a[data-px-href] { cursor: pointer; }
 `;
 
+const FORCE_CSS = `
+.px-html { overflow: visible !important; height: auto !important; min-height: 100%; }
+.px-body { overflow: visible !important; height: auto !important; min-height: 100%; }
+.px-banner { position: sticky; top: 0; z-index: 2147483647; display: flex; align-items: center; justify-content: center;
+  gap: 12px; padding: 8px 12px; background: var(--toolbar-bg, #222); color: var(--text, #fff);
+  border-bottom: 1px solid var(--border, #444); font: 13px/1.3 system-ui, sans-serif; }
+.px-banner-btn { border: 0; border-radius: 14px; padding: 5px 12px; background: var(--accent, #fa1e4e); color: #fff;
+  font: inherit; font-weight: 600; cursor: pointer; }
+.px-banner-x { border: 0; background: transparent; color: inherit; font-size: 18px; line-height: 1; cursor: pointer; opacity: .7; }
+`;
+
+// Sitios que dependen totalmente de JavaScript: se abren en modo completo (pestaña real del navegador)
+const FULL_HOSTS = /(^|\.)(youtube\.com|youtu\.be|google\.[a-z.]+|gmail\.com|xbox\.com|microsoft\.com|live\.com|office\.com|bing\.com|twitch\.tv|netflix\.com|spotify\.com|discord\.com|instagram\.com|facebook\.com|x\.com|twitter\.com|tiktok\.com)$/i;
+
 const DROP = 'script,noscript,iframe,frame,frameset,object,embed,base,meta,link[rel~="preload"],' +
   'link[rel~="modulepreload"],link[rel~="prefetch"],link[rel~="icon"],link[rel~="manifest"]';
 
@@ -247,6 +261,18 @@ class Tab {
   /* ── Navegación ── */
 
   async navigate(url, { method = 'GET', body = null, history = 'push' } = {}) {
+    // Sitios con mucho JavaScript: modo completo (se llama antes de cualquier await para que el navegador permita la ventana)
+    if (method === 'GET' && FULL_HOSTS.test(hostOf(url)) && this.manager.openFull(url)) {
+      this.loadId++;
+      this.url = url;
+      this.#setFavicon(url);
+      this.#renderMessage('Abierto en una pestaña completa',
+        `${url}\n\nEste sitio necesita JavaScript, así que se ha abierto en una pestaña nueva del navegador a través del proxy.\nMantén esta pestaña abierta mientras lo uses.`);
+      this.#setTitle(hostOf(url));
+      this.#setLoading(false);
+      this.manager.sync(this);
+      return;
+    }
     const id = ++this.loadId;
     this.#setLoading(true);
     this.url = url;
@@ -308,6 +334,7 @@ class Tab {
     const links = [...doc.querySelectorAll('link[rel~="stylesheet"]')]
       .map((el) => ({ el, abs: absolutize(el.getAttribute('href'), base) }));
 
+    const scriptCount = doc.querySelectorAll('script').length;
     doc.querySelectorAll(DROP).forEach((n) => n.remove());
     doc.querySelectorAll('*').forEach((el) => this.#sanitize(el, base, finalUrl));
 
@@ -343,6 +370,10 @@ class Tab {
       bodyDiv.append(...(doc.body ? [...doc.body.childNodes] : []));
       htmlDiv.append(bodyDiv);
       root.append(htmlDiv);
+      const force = document.createElement('style');
+      force.textContent = FORCE_CSS;
+      root.append(force);
+      if (scriptCount > 3) root.insertBefore(this.#fullBanner(), htmlDiv);
 
       this.host.scrollTop = 0;
       this.#setTitle(doc.title.trim() || new URL(finalUrl).hostname);
@@ -418,6 +449,17 @@ class Tab {
     const p = document.createElement('p'); p.textContent = text;
     wrap.append(h, p);
     root.append(style, wrap);
+  }
+
+  #fullBanner() {
+    const bar = el('div', 'px-banner');
+    bar.append(el('span', null, 'Esta página usa JavaScript; aquí solo se muestra su contenido estático.'));
+    const open = el('button', 'px-banner-btn', 'Abrir completa ↗');
+    open.addEventListener('click', () => this.manager.openFull(this.url));
+    const close = el('button', 'px-banner-x', '×');
+    close.addEventListener('click', () => bar.remove());
+    bar.append(open, close);
+    return bar;
   }
 
   #setFavicon(url) {
@@ -539,6 +581,11 @@ class TabManager {
     if (this.activeId === id) this.activate(ids[idx + 1] ?? ids[idx - 1]);
   }
 
+  openFull(url) {
+    if (!url) return false;
+    return !!window.open(CFG.prefix + CFG.encodeUrl(url), '_blank');
+  }
+
   sync(tab) {
     if (tab !== this.active) return;
     if (document.activeElement !== this.input) this.input.value = tab.url;
@@ -642,11 +689,13 @@ function renderBookmarksBar(manager) {
   const star = $('#star');
   const secure = $('#secure');
   const progress = $('#progress');
+  const openFull = $('#open-full');
   manager.onChange = (tab) => {
     star.disabled = !tab.url;
     star.classList.toggle('on', !!tab.url && Bookmarks.has(tab.url));
     secure.dataset.state = !tab.url ? 'none' : tab.url.startsWith('https:') ? 'ok' : 'warn';
     progress.classList.toggle('active', !!tab.loading);
+    openFull.disabled = !tab.url;
   };
 
   star.addEventListener('click', () => {
@@ -656,6 +705,8 @@ function renderBookmarksBar(manager) {
     renderBookmarksBar(manager);
     manager.sync(tab);
   });
+
+  openFull.addEventListener('click', () => manager.openFull(manager.active?.url));
 
   // Barra lateral estilo Opera GX
   $('#sb-logo').addEventListener('click', () => manager.create());
